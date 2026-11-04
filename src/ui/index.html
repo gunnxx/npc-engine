@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NPC Chat</title>
+<style>
+:root {
+  --bg: #f7f5f0;
+  --panel: #fffdf9;
+  --fg: #22262b;
+  --muted: #5d646d;
+  --rule: #d9d4ca;
+  --accent: #1f6f8b;
+  --bubble: #e9e5dc;
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #171a1e; --panel: #1f2328; --fg: #e6e3dc; --muted: #a39f96; --rule: #343a42;
+    --accent: #6fb6cf; --bubble: #2a3036; color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  display: flex; flex-direction: column; background: var(--bg); color: var(--fg);
+  font-family: var(--font-ui); font-size: 16px; line-height: 1.55;
+}
+header {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding: 12px 16px; border-bottom: 1px solid var(--rule); background: var(--panel);
+}
+header h1 { font-size: 1rem; font-weight: 600; margin: 0 auto 0 0; }
+header .mode { font-size: 0.85rem; color: var(--muted); font-family: var(--font-mono); }
+button {
+  font: inherit; font-size: 0.9rem; color: var(--fg); background: var(--bg);
+  border: 1px solid var(--rule); border-radius: 8px; padding: 6px 10px; cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+main { flex: 1; overflow-y: auto; }
+.column { max-width: 720px; margin: 0 auto; padding: 24px 16px 8px; display: flex; flex-direction: column; gap: 18px; }
+.intro { color: var(--muted); font-size: 0.95rem; text-align: center; padding: 24px 0; }
+.msg { display: flex; flex-direction: column; gap: 4px; }
+.msg.user { align-items: flex-end; }
+.msg.user .text {
+  background: var(--bubble); border-radius: 18px 18px 4px 18px; padding: 10px 14px; max-width: 80%;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.msg.npc .text { white-space: pre-wrap; overflow-wrap: anywhere; padding: 0 2px; }
+.msg.npc .name { font-size: 0.8rem; font-weight: 600; color: var(--accent); }
+.msg .note { font-size: 0.78rem; color: var(--muted); font-family: var(--font-mono); }
+.msg.error .text { color: #b4442f; }
+.thinking { color: var(--muted); font-size: 0.9rem; }
+.thinking::after { content: "…"; animation: dots 1.2s steps(4, end) infinite; }
+@keyframes dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
+footer { padding: 8px 16px 16px; }
+.composer {
+  max-width: 720px; margin: 0 auto; display: flex; align-items: flex-end; gap: 8px;
+  background: var(--panel); border: 1px solid var(--rule); border-radius: 16px; padding: 8px 8px 8px 14px;
+}
+.composer:focus-within { border-color: var(--accent); }
+textarea {
+  flex: 1; resize: none; border: 0; outline: 0; background: transparent; color: var(--fg);
+  font: inherit; line-height: 1.5; max-height: 160px; padding: 6px 0;
+}
+.send {
+  width: 36px; height: 36px; border-radius: 50%; border: 0; background: var(--accent); color: #fff;
+  font-size: 1.1rem; display: grid; place-items: center; flex-shrink: 0;
+}
+.send:disabled { opacity: 0.4; cursor: default; }
+.hint { max-width: 720px; margin: 6px auto 0; font-size: 0.75rem; color: var(--muted); text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">NPC Chat</h1>
+  <span class="mode" id="mode"></span>
+  <button id="reset" type="button">New chat</button>
+</header>
+<main><div class="column" id="log"></div></main>
+<footer>
+  <form class="composer" id="form">
+    <textarea id="input" rows="1" placeholder="Say something" autofocus></textarea>
+    <button class="send" id="send" type="submit" aria-label="Send">&#8593;</button>
+  </form>
+  <div class="hint">Enter sends, Shift+Enter adds a line. Memory lives on the MCP server, New chat wipes it.</div>
+</footer>
+<script>
+const $ = (id) => document.getElementById(id);
+const log = $("log"), input = $("input"), send = $("send");
+let npc = { name: "NPC", description: "" };
+
+function add(kind, text, name, note) {
+  const wrap = document.createElement("div");
+  wrap.className = "msg " + kind;
+  if (name) { const n = document.createElement("div"); n.className = "name"; n.textContent = name; wrap.appendChild(n); }
+  const t = document.createElement("div"); t.className = "text"; t.textContent = text; wrap.appendChild(t);
+  if (note) { const m = document.createElement("div"); m.className = "note"; m.textContent = note; wrap.appendChild(m); }
+  log.appendChild(wrap);
+  log.parentElement.scrollTop = log.parentElement.scrollHeight;
+  return wrap;
+}
+
+function showIntro() {
+  log.innerHTML = "";
+  const intro = document.createElement("div");
+  intro.className = "intro";
+  intro.textContent = `You are talking to ${npc.name}. ${npc.description}`;
+  log.appendChild(intro);
+}
+
+async function api(path, body) {
+  const res = await fetch(path, { method: body ? "POST" : "GET", headers: { "content-type": "application/json" },
+                                  body: body ? JSON.stringify(body) : undefined });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.detail || res.statusText);
+  return data;
+}
+
+async function submit() {
+  const text = input.value.trim();
+  if (!text || send.disabled) return;
+  add("user", text);
+  input.value = ""; input.style.height = "auto";
+  send.disabled = true;
+  const wait = document.createElement("div");
+  wait.className = "thinking"; wait.textContent = `${npc.name} is thinking`;
+  log.appendChild(wait);
+  try {
+    const data = await api("/api/chat", { message: text });
+    wait.remove();
+    const note = data.tool ? `${data.tool.name} ${JSON.stringify(data.tool.args)}  ·  ${data.prompt_tokens} prompt tokens`
+                           : `${data.prompt_tokens} prompt tokens`;
+    add("npc", data.reply, npc.name, note);
+  } catch (err) {
+    wait.remove();
+    add("error", `Something went wrong. ${err.message}`);
+  } finally {
+    send.disabled = false; input.focus();
+  }
+}
+
+$("form").addEventListener("submit", (e) => { e.preventDefault(); submit(); });
+input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } });
+input.addEventListener("input", () => { input.style.height = "auto"; input.style.height = input.scrollHeight + "px"; });
+$("reset").addEventListener("click", async () => {
+  try { await api("/api/reset", {}); showIntro(); }
+  catch (err) { add("error", `Could not reset. ${err.message}`); }
+});
+
+(async () => {
+  npc = await api("/api/info");
+  $("title").textContent = npc.name;
+  $("mode").textContent = `${npc.mode} mode`;
+  showIntro();
+})();
+</script>
+</body>
+</html>
